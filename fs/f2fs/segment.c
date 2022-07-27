@@ -260,9 +260,65 @@ static void __complete_revoke_list(struct inode *inode, struct list_head *head,
 	struct revoke_entry *cur, *tmp;
 
 	list_for_each_entry_safe(cur, tmp, head, list) {
-		if (revoke)
-			__replace_atomic_write_block(inode, cur->index,
-						cur->old_addr, NULL, true);
+		struct page *page = cur->page;
+
+		if (drop)
+			trace_f2fs_commit_inmem_page(page, INMEM_DROP);
+
+		if (trylock) {
+			/*
+			 * to avoid deadlock in between page lock and
+			 * inmem_lock.
+			 */
+			if (!trylock_page(page))
+				continue;
+		} else {
+			lock_page(page);
+		}
+
+		f2fs_wait_on_page_writeback(page, DATA, true, true);
+
+		if (recover) {
+			struct dnode_of_data dn;
+			struct node_info ni;
+
+			trace_f2fs_commit_inmem_page(page, INMEM_REVOKE);
+retry:
+			set_new_dnode(&dn, inode, NULL, NULL, 0);
+			err = f2fs_get_dnode_of_data(&dn, page->index,
+								LOOKUP_NODE);
+			if (err) {
+				if (err == -ENOMEM) {
+					congestion_wait(BLK_RW_ASYNC,
+							DEFAULT_IO_TIMEOUT);
+					cond_resched();
+					goto retry;
+				}
+				err = -EAGAIN;
+				goto next;
+			}
+			err = f2fs_get_node_info(sbi, dn.nid, &ni);
+			if (err) {
+				f2fs_put_dnode(&dn);
+				return err;
+			}
+			if (cur->old_addr == NEW_ADDR) {
+				f2fs_invalidate_blocks(sbi, dn.data_blkaddr);
+				f2fs_update_data_blkaddr(&dn, NEW_ADDR);
+			} else
+				f2fs_replace_block(sbi, &dn, dn.data_blkaddr,
+					cur->old_addr, ni.version, true, true);
+			f2fs_put_dnode(&dn);
+		}
+next:
+		/* we don't need to invalidate this in the sccessful status */
+		if (drop || recover) {
+			ClearPageUptodate(page);
+			clear_cold_data(page);
+		}
+		f2fs_clear_page_private(page);
+		f2fs_put_page(page, 1);
+
 		list_del(&cur->list);
 		kmem_cache_free(revoke_entry_slab, cur);
 	}

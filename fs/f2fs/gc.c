@@ -978,9 +978,8 @@ static int gc_node_segment(struct f2fs_sb_info *sbi,
 	block_t start_addr;
 	int off;
 	int phase = 0;
-	bool fggc = (gc_type == FG_GC);
 	int submitted = 0;
-	unsigned int usable_blks_in_seg = f2fs_usable_blks_in_seg(sbi, segno);
+	bool fggc = (gc_type == FG_GC);
 
 	start_addr = START_BLOCK(sbi, segno);
 
@@ -1257,8 +1256,10 @@ static int move_data_block(struct inode *inode, block_t bidx,
 		goto out;
 	}
 
-	err = f2fs_gc_pinned_control(inode, gc_type, segno);
-	if (err)
+	if (f2fs_is_atomic_file(inode)) {
+		err = -EAGAIN;
+		F2FS_I(inode)->i_gc_failures[GC_FAILURE_ATOMIC]++;
+		F2FS_I_SB(inode)->skipped_atomic_files[gc_type]++;
 		goto out;
 
 	set_new_dnode(&dn, inode, NULL, NULL, 0);
@@ -1283,6 +1284,9 @@ static int move_data_block(struct inode *inode, block_t bidx,
 	err = f2fs_get_node_info(fio.sbi, dn.nid, &ni, false);
 	if (err)
 		goto put_out;
+
+
+	set_summary(&sum, dn.nid, dn.ofs_in_node, ni.version);
 
 	/* read page */
 	fio.page = page;
@@ -1398,8 +1402,10 @@ static int move_data_page(struct inode *inode, block_t bidx, int gc_type,
 		goto out;
 	}
 
-	err = f2fs_gc_pinned_control(inode, gc_type, segno);
-	if (err)
+	if (f2fs_is_atomic_file(inode)) {
+		err = -EAGAIN;
+		F2FS_I(inode)->i_gc_failures[GC_FAILURE_ATOMIC]++;
+		F2FS_I_SB(inode)->skipped_atomic_files[gc_type]++;
 		goto out;
 
 	if (gc_type == BG_GC) {
@@ -1596,8 +1602,8 @@ next_step:
 			start_bidx = f2fs_start_bidx_of_node(nofs, inode)
 								+ ofs_in_node;
 			if (f2fs_post_read_required(inode))
-				err = move_data_block(inode, start_bidx,
-							gc_type, segno, off);
+				err = move_data_block(inode, start_bidx, gc_type,
+								segno, off);
 			else
 				err = move_data_page(inode, start_bidx, gc_type,
 								segno, off);

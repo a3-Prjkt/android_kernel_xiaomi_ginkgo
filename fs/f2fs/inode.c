@@ -835,11 +835,14 @@ no_delete:
 	stat_sub_compr_blocks(inode,
 			atomic_read(&F2FS_I(inode)->i_compr_blocks));
 
-	if (likely(!f2fs_cp_error(sbi) &&
-				!is_sbi_flag_set(sbi, SBI_CP_DISABLED)))
-		f2fs_bug_on(sbi, is_inode_flag_set(inode, FI_DIRTY_INODE));
-	else
+	if (unlikely(is_inode_flag_set(inode, FI_DIRTY_INODE))) {
 		f2fs_inode_synced(inode);
+		f2fs_warn(sbi, "inconsistent dirty inode:%lu entry found during eviction\n",
+			 inode->i_ino);
+		if (!is_set_ckpt_flags(sbi, CP_ERROR_FLAG) &&
+		    !is_sbi_flag_set(sbi, SBI_CP_DISABLED))
+			f2fs_bug_on(sbi, 1);
+	}
 
 	/* for the case f2fs_new_inode() was failed, .i_ino is zero, skip it */
 	if (inode->i_ino)
@@ -917,7 +920,6 @@ void f2fs_handle_failed_inode(struct inode *inode)
 	} else {
 		set_inode_flag(inode, FI_FREE_NID);
 	}
-
 out:
 	f2fs_unlock_op(sbi);
 
